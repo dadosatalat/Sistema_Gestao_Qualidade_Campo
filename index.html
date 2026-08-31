@@ -320,6 +320,8 @@ body:not(.tech-mode) .technical-only{display:none!important}
 .cloud-btn { background: #eaf0f4; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; font-weight: 700; cursor: pointer; color: var(--navy); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
 .cloud-btn:hover { background: #d9e6ed; }
 .toast-msg { position: fixed; bottom: 20px; right: 20px; background: var(--navy); color: white; padding: 12px 18px; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); z-index: 99999; font-size: 13px; font-weight: 600; display: none; }
+/* Smooth rendering */
+.panel { contain: content; }
 </style>
 </head>
 <body>
@@ -743,12 +745,25 @@ let state={agenda:INITIAL_AGENDA,nc:INITIAL_NC,lab:INITIAL_LAB,routeMaster:{},us
  ]};
 let QUALITY_CACHE=null;
 let QUALITY_CACHE_VERSION=0;
-let PRIORITY_CACHE=new Map();
-let ROUTE_CACHE=new Map();
-let PROPS_CACHE=null;
-let PROPS_MAP_CACHE=null;
-let PLANNER_INITIALIZED=false;
-function invalidateQualityCache(){QUALITY_CACHE=null;PRIORITY_CACHE.clear();ROUTE_CACHE.clear();PROPS_CACHE=null;PROPS_MAP_CACHE=null;PLANNER_INITIALIZED=false;QUALITY_CACHE_VERSION++}
+let PRIORITY_CACHE = new Map();
+let ROUTE_CACHE = new Map();
+let PROPS_CACHE = null;
+let PROPS_MAP_CACHE = null;
+let NC_HISTORY_INDEX = null;
+let PLANNER_INITIALIZED = false;
+let WEEKLY_CACHE_MEMO = null;
+
+function invalidateQualityCache(){
+  QUALITY_CACHE = null;
+  PRIORITY_CACHE.clear();
+  ROUTE_CACHE.clear();
+  PROPS_CACHE = null;
+  PROPS_MAP_CACHE = null;
+  NC_HISTORY_INDEX = null;
+  PLANNER_INITIALIZED = false;
+  WEEKLY_CACHE_MEMO = null;
+  QUALITY_CACHE_VERSION++;
+}
 
 
 
@@ -1630,79 +1645,40 @@ function ncHistoryFingerprint(r){
 }
 function ensureNCHistory(){
  if(!Array.isArray(state.ncHistory))state.ncHistory=[];
- if(!Array.isArray(state.ncBatches))state.ncBatches=[];
-
- // Migração inicial da base ativa existente.
- if(state.ncHistory.length===0 && Array.isArray(state.nc) && state.nc.length){
-   appendNCHistory(state.nc,'Base existente no sistema',true);
+ if(!state.ncHistory.length && Array.isArray(state.nc) && state.nc.length){
+   let initialBatchId='batch_seed_'+Date.now();
+   let seedMonth=defaultNCMonthRef();
+   state.ncHistory=state.nc.map((r,idx)=>Object.assign({},r,{
+     __batchId:initialBatchId,
+     __monthRef:r.__monthRef||seedMonth,
+     __importDate:new Date().toISOString(),
+     __uniqueKey:ncEventUniqueKey(r,idx,seedMonth)
+   }));
+   if(!Array.isArray(state.ncBatches))state.ncBatches=[];
+   state.ncBatches.push({id:initialBatchId,name:'Base inicial de NC',monthRef:seedMonth,importedAt:new Date().toISOString(),count:state.ncHistory.length});
  }
-
- // Normaliza históricos antigos que ainda não tinham __ncType.
- if(state.ncHistory.some(r=>!r.__ncType)){
-   let old=state.ncHistory.slice();
-   state.ncHistory=[];
-   let seen=new Set();
-
-   for(let r of old){
-     let events=explodeNCEvents([r],r.__sourceFile||'Histórico legado');
-     for(let ev of events){
-       ev.__importedAt=r.__importedAt||new Date().toISOString();
-       ev.__sourceFile=r.__sourceFile||'Histórico legado';
-       ev.__monthRef=r.__monthRef||ev.__monthRef;
-       let fp=ncHistoryFingerprint(ev);
-       if(seen.has(fp))continue;
-       seen.add(fp);
-       state.ncHistory.push(ev);
-     }
+ if(!NC_HISTORY_INDEX){
+   NC_HISTORY_INDEX = new Map();
+   for(let r of state.ncHistory){
+     let m = ncMatricula(r);
+     if(!m) continue;
+     if(!NC_HISTORY_INDEX.has(m)) NC_HISTORY_INDEX.set(m, []);
+     NC_HISTORY_INDEX.get(m).push(r);
+   }
+   for(let list of NC_HISTORY_INDEX.values()){
+     list.sort((a,b)=>{
+       let ma=val(a.__monthRef||ncMonthRef(a,'')),mb=val(b.__monthRef||ncMonthRef(b,''));
+       if(ma!==mb)return mb.localeCompare(ma);
+       return rowDate(b).localeCompare(rowDate(a));
+     });
    }
  }
 }
-function appendNCHistory(rows,fileName,isMigration=false){
- if(!Array.isArray(state.ncHistory))state.ncHistory=[];
- if(!Array.isArray(state.ncBatches))state.ncBatches=[];
 
- let now=new Date().toISOString();
- let events=explodeNCEvents(rows,fileName);
- let existing=new Set(state.ncHistory.map(ncHistoryFingerprint));
- let added=0;
- let months=new Set();
-
- for(let src of events){
-   let r=Object.assign({},src);
-   let month=r.__monthRef||ncMonthRef(r,now.slice(0,7));
-   months.add(month);
-   r.__monthRef=month;
-   r.__importedAt=now;
-   r.__sourceFile=fileName||'';
-
-   let fp=ncHistoryFingerprint(r);
-   if(existing.has(fp))continue;
-
-   existing.add(fp);
-   state.ncHistory.push(r);
-   added++;
- }
-
- if(added || isMigration){
-   state.ncBatches.push({
-     id:'nc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
-     importedAt:now,
-     source:fileName||'',
-     months:[...months].sort(),
-     added,
-     migration:!!isMigration
-   });
- }
- return added;
-}
 function propertyNCHistory(matricula){
  let m=mat(matricula);
  ensureNCHistory();
- return state.ncHistory.filter(r=>ncMatricula(r)===m).sort((a,b)=>{
-   let ma=val(a.__monthRef||ncMonthRef(a,'')),mb=val(b.__monthRef||ncMonthRef(b,''));
-   if(ma!==mb)return mb.localeCompare(ma);
-   return rowDate(b).localeCompare(rowDate(a));
- });
+ return (NC_HISTORY_INDEX && NC_HISTORY_INDEX.get(m)) || [];
 }
 function monthLabel(ref){
  let m=val(ref).match(/^(\d{4})-(\d{2})$/);
@@ -2081,10 +2057,11 @@ function activate(id){
 
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===id));
 
- try{render(id)}catch(e){
-   console.error('Erro ao renderizar aba '+id,e);
-   alert('Não foi possível abrir esta área: '+e.message);
- }
+ requestAnimationFrame(()=>{
+   try{render(id)}catch(e){
+     console.error('Erro ao renderizar aba '+id,e);
+   }
+ });
 }
 
 let TECH_LAZY_READY=false;
@@ -2358,6 +2335,8 @@ function tankHasProblem(t){
 function propertyProblems(matricula){return propertyBundle(matricula).filter(tankHasProblem)}
 function buildPropertyQualitySummary(){
  buildTankConsolidation();
+ if(QUALITY_CACHE && QUALITY_CACHE.summary) return QUALITY_CACHE.summary;
+
  let summary=new Map();
  for(let [m,tanks] of QUALITY_CACHE.byMat.entries()){
    let hasCBT=tanks.some(t=>['crit','warn'].includes(t.cbtClass.cls));
@@ -2373,6 +2352,7 @@ function buildPropertyQualitySummary(){
      tanks
    });
  }
+ if(QUALITY_CACHE) QUALITY_CACHE.summary = summary;
  return summary;
 }
 
@@ -2525,7 +2505,7 @@ function fastPropertyPriority(m){
 function fastOfficialRouteFor(matricula){
   let m=mat(matricula);
   if(!m)return '';
-  if(state.routeMaster&&state.routeMaster[m])return state.routeMaster[m];
+  if(state.routeMaster && state.routeMaster[m])return state.routeMaster[m];
   if(ROUTE_CACHE.has(m))return ROUTE_CACHE.get(m);
   let r=officialRouteFor(m);
   ROUTE_CACHE.set(m,r);
