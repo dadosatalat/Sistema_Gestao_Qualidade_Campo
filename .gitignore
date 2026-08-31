@@ -1,0 +1,16 @@
+# Logs & Cache
+node_modules/
+.npm
+*.log
+.DS_Store
+Thumbs.db
+
+# Configurações locais / segredos
+.env
+.env.local
+.env.*.local
+
+# Gemini / IDE
+.gemini/
+.vscode/
+.idea/
