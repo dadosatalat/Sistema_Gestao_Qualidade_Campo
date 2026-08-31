@@ -743,7 +743,9 @@ let state={agenda:INITIAL_AGENDA,nc:INITIAL_NC,lab:INITIAL_LAB,routeMaster:{},us
  ]};
 let QUALITY_CACHE=null;
 let QUALITY_CACHE_VERSION=0;
-function invalidateQualityCache(){QUALITY_CACHE=null;QUALITY_CACHE_VERSION++}
+let PRIORITY_CACHE=new Map();
+let PLANNER_INITIALIZED=false;
+function invalidateQualityCache(){QUALITY_CACHE=null;PRIORITY_CACHE.clear();PLANNER_INITIALIZED=false;QUALITY_CACHE_VERSION++}
 
 
 
@@ -2466,7 +2468,7 @@ function visitMatricula(a){
 
 function priority(a){
  let m=visitMatricula(a);
- if(m)return propertyPriorityOfficial(m);
+ if(m)return fastPropertyPriority(m);
  let stored=val(pick(a,['Prioridade','PRIORIDADE'])).trim().toUpperCase();
  if(stored.startsWith('P1'))return 'P1';
  if(stored.startsWith('P2'))return 'P2';
@@ -2503,6 +2505,15 @@ function plannerProperties(){
      reason:propertyPriorityExplanation(p.m)
    };
  }).filter(x=>x.problems.length>0);
+}
+
+
+function fastPropertyPriority(m){
+  if(!m)return 'P4';
+  if(PRIORITY_CACHE.has(m))return PRIORITY_CACHE.get(m);
+  let p=propertyPriorityOfficial(m);
+  PRIORITY_CACHE.set(m,p);
+  return p;
 }
 
 function propertyPriorityOfficial(matricula){
@@ -2719,41 +2730,68 @@ function bindPlannerEvents(){
  if(saveBtn&&!saveBtn.dataset.bound){saveBtn.addEventListener('click',savePlanner);saveBtn.dataset.bound='1'}
 }
 
+let AGENDA_BODY_BOUND=false;
 function renderAgenda(){
- if(document.body.classList.contains('tech-mode')){fillPlannerControls();bindPlannerEvents();}
+ if(document.body.classList.contains('tech-mode') && !PLANNER_INITIALIZED){
+   fillPlannerControls();
+   bindPlannerEvents();
+   PLANNER_INITIALIZED=true;
+ }
  let q=norm(document.getElementById('agendaSearch').value),
      rt=document.getElementById('agendaRoute').value,
      showClosed=document.getElementById('agendaShowClosed')?.checked||false;
 
- let indexed=state.agenda.map((a,i)=>({a,i}))
- .filter(({a})=>{
+ let agenda=state.agenda||[];
+ let html='';
+ let count=0;
+
+ for(let i=0; i<agenda.length; i++){
+   let a=agenda[i];
    let route=val(pick(a,['Rota','Rota Histórica','Rota Oficial']));
-   let hay=norm(val(pick(a,['Produtor','Nome']))+' '+visitMatricula(a));
-   return (!q||hay.includes(q))&&(!rt||route===rt)&&(showClosed||!isDoneStatus(a));
- })
- .sort((x,y)=>{
-   let dx=dateISO(pick(x.a,['Data','Data Agenda','Data Agendada','Data Real']));
-   let dy=dateISO(pick(y.a,['Data','Data Agenda','Data Agendada','Data Real']));
-   return dx.localeCompare(dy);
- });
+   if(rt && route!==rt) continue;
 
- document.getElementById('agendaBody').innerHTML=indexed.slice(0,1000).map(({a,i})=>{
-   let pr=priority(a);
-   return `<tr>
-     <td>${esc(displayDate(pick(a,['Data','Data Agenda','Data Agendada','Data Real'])))}</td>
+   let isDone=isDoneStatus(a);
+   if(!showClosed && isDone) continue;
+
+   let prod=val(pick(a,['Produtor','Nome']));
+   let m=visitMatricula(a);
+   let hay=norm(prod+' '+m);
+   if(q && !hay.includes(q)) continue;
+
+   let pr=m?fastPropertyPriority(m):priority(a);
+   let dateStr=displayDate(pick(a,['Data','Data Agenda','Data Agendada','Data Real']));
+   let techName=pick(a,['Técnico','Tecnico']);
+   let statusBadge=visitStatusBadge(a);
+   let actionBtn=isDone?'<span class="tag ok">No histórico</span>':`<button class="update-agenda-btn" data-index="${i}">Atualizar atendimento</button>`;
+
+   html+=`<tr>
+     <td>${esc(dateStr)}</td>
      <td><span class="badge ${pr.toLowerCase()}">${esc(pr)}</span></td>
-     <td>${esc(visitMatricula(a))}</td>
-     <td>${esc(pick(a,['Produtor','Nome']))}</td>
-     <td>${esc(pick(a,['Rota','Rota Histórica','Rota Oficial']))}</td>
-     <td>${esc(pick(a,['Técnico','Tecnico']))}</td>
-     <td>${visitStatusBadge(a)}</td>
-     <td>${isDoneStatus(a)?'<span class="tag ok">No histórico</span>':`<button class="update-agenda-btn" data-index="${i}">Atualizar atendimento</button>`}</td>
+     <td>${esc(m)}</td>
+     <td>${esc(prod)}</td>
+     <td>${esc(route)}</td>
+     <td>${esc(techName)}</td>
+     <td>${statusBadge}</td>
+     <td>${actionBtn}</td>
    </tr>`;
- }).join('');
 
- document.querySelectorAll('.update-agenda-btn').forEach(b=>{
-   b.addEventListener('click',()=>openVisitUpdate(b.dataset.index));
- });
+   count++;
+   if(count>=1000) break;
+ }
+
+ const tbody=document.getElementById('agendaBody');
+ if(tbody){
+   tbody.innerHTML=html;
+   if(!AGENDA_BODY_BOUND){
+     tbody.addEventListener('click',e=>{
+       let btn=e.target.closest('.update-agenda-btn');
+       if(btn&&btn.dataset.index!==undefined){
+         openVisitUpdate(btn.dataset.index);
+       }
+     });
+     AGENDA_BODY_BOUND=true;
+   }
+ }
 }
 function renderReturns(){
  let rows=state.agenda.filter(a=>!isDoneStatus(a)&&isReturnVisit(a))
@@ -3491,7 +3529,8 @@ safeLoad();ensureTeam();ensureNCHistory();rebuildRoutes();fillRoutes();
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>activate(b.dataset.tab)));
 document.getElementById('modeMgmt').addEventListener('click',()=>setMode('GESTAO'));
 document.getElementById('modeTech').addEventListener('click',()=>setMode('TECNICO'));
-document.getElementById('agendaSearch').addEventListener('input',renderAgenda);
+let AGENDA_TIMER=null;
+document.getElementById('agendaSearch').addEventListener('input',()=>{clearTimeout(AGENDA_TIMER);AGENDA_TIMER=setTimeout(renderAgenda,50);});
 document.getElementById('agendaRoute').addEventListener('change',renderAgenda);
 document.getElementById('propSearch').addEventListener('input',renderProps);
 document.getElementById('techSelect').addEventListener('change',renderToday);
