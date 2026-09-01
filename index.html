@@ -3,7 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sistema Atalat V37.11.7 — Gestão da Qualidade no Campo</title>
+<title>Sistema Atalat V37.12.0 — Gestão da Qualidade no Campo</title>
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0F3D5E">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Atalat Campo">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <style>
 :root{--cream:#FDFBF7;--navy:#0F3D5E;--blue:#1B4965;--line:#d9e1e5;--green:#477a55;--warn:#a86b1a;--red:#a13c36;--muted:#6d7b82}
 *{box-sizing:border-box}
@@ -321,16 +329,19 @@ body:not(.tech-mode) .technical-only{display:none!important}
 .cloud-btn:hover { background: #d9e6ed; }
 .toast-msg { position: fixed; bottom: 20px; right: 20px; background: var(--navy); color: white; padding: 12px 18px; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); z-index: 99999; font-size: 13px; font-weight: 600; display: none; }
 .panel { contain: content; }
+.pwa-install-btn { background: #258352; color: white; border: none; border-radius: 10px; padding: 6px 14px; font-weight: 800; cursor: pointer; display: none; align-items: center; gap: 6px; font-size: 12px; box-shadow: 0 2px 8px rgba(37,131,82,0.3); }
+.pwa-install-btn:hover { background: #1c6640; }
 </style>
 </head>
 <body>
 <header>
  <div class="head">
    <div class="logo"></div>
-   <div><h1>Sistema de Gestão da Qualidade no Campo — Atalat</h1><div class="sub">V37.11.7 • Propriedades Instantâneas • Supabase Online • Ultra Rápido</div></div>
+   <div><h1>Sistema de Gestão da Qualidade no Campo — Atalat</h1><div class="sub">V37.12.0 • Aplicativo Instalável (PWA) • Supabase Online • Ultra Rápido</div></div>
    
     <div class="spacer"></div>
     <div class="mode-buttons">
+      <button id="btnInstallPwa" class="pwa-install-btn" title="Instalar aplicativo no celular ou computador">📲 Instalar App</button>
       <button id="btnCloudConfig" class="cloud-btn" title="Configurar conexão com o Supabase">☁️ Nuvem / Supabase</button>
       <button id="modeMgmt" class="primary">👩‍💼 Modo Gestão</button>
       <button id="modeTech">🧑‍🔧 Modo Técnico</button>
@@ -3729,10 +3740,69 @@ if(document.readyState==='loading'){
  bindVisitModalEvents();bindPlannerEvents();bindTeamEvents();bindWeeklyEvents();bindAgendaFlowEvents();bindReportEvents();fillTechnicianSelectors();
 }
 
+// --- PWA (Progressive Web App) Service Worker & Install Prompt ---
+let deferredPwaPrompt = null;
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js')
+      .then((reg) => {
+        console.log('✅ PWA Service Worker registrado:', reg.scope);
+      })
+      .catch((err) => {
+        console.warn('Aviso PWA Service Worker:', err);
+      });
+  });
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPwaPrompt = e;
+  let btn = document.getElementById('btnInstallPwa');
+  let isStandalone = window.matchMedia?.('(display-mode: standalone)')?.matches || (window.navigator && window.navigator.standalone);
+  if (btn && !isStandalone) {
+    btn.style.display = 'inline-flex';
+  }
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredPwaPrompt = null;
+  let btn = document.getElementById('btnInstallPwa');
+  if (btn) btn.style.display = 'none';
+  showToast('🎉 Aplicativo Atalat instalado com sucesso na sua tela inicial!');
+});
+
+function initPwaInstall() {
+  let btn = document.getElementById('btnInstallPwa');
+  if (!btn) return;
+  
+  let isStandalone = window.matchMedia?.('(display-mode: standalone)')?.matches || (window.navigator && window.navigator.standalone);
+  if (!isStandalone) {
+    btn.style.display = 'inline-flex';
+  }
+
+  btn.addEventListener('click', async () => {
+    if (deferredPwaPrompt) {
+      deferredPwaPrompt.prompt();
+      let choice = await deferredPwaPrompt.userChoice;
+      if (choice.outcome === 'accepted') {
+        btn.style.display = 'none';
+      }
+      deferredPwaPrompt = null;
+    } else {
+      alert('📲 Como instalar o aplicativo Atalat:\n\n' +
+            '• No Google Chrome (Android): toque nos três pontinhos no topo à direita e escolha "Instalar aplicativo" ou "Adicionar à tela inicial".\n\n' +
+            '• No iPhone (Safari): toque no botão Compartilhar (quadrado com seta para cima) e escolha "Adicionar à Tela de Início".\n\n' +
+            '• No Computador (Chrome/Edge): clique no ícone de instalação na barra de endereço.');
+    }
+  });
+}
+
 setMode(state.userMode==='TECNICO'?'TECNICO':'GESTAO');
 renderHome();
 initSupabase();
 bindCloudModalEvents();
+initPwaInstall();
 </script>
 
 <div id="visitModalBackdrop" class="modal-backdrop">
