@@ -743,6 +743,7 @@ let state={agenda:INITIAL_AGENDA,nc:INITIAL_NC,lab:INITIAL_LAB,routeMaster:{},us
    {id:'tech_novo_3',name:'Novo Técnico 3',status:'CONTRATAÇÃO',note:''}
  ]};
 let QUALITY_CACHE=null;
+let PROPERTY_LIST_CACHE=null;
 let QUALITY_CACHE_VERSION=0;
 let PRIORITY_CACHE = new Map();
 let ROUTE_CACHE = new Map();
@@ -753,6 +754,7 @@ let PLANNER_INITIALIZED = false;
 
 function invalidateQualityCache(){
   QUALITY_CACHE = null;
+  PROPERTY_LIST_CACHE = null;
   PRIORITY_CACHE.clear();
   ROUTE_CACHE.clear();
   PROPS_CACHE = null;
@@ -2856,38 +2858,108 @@ function renderReturns(){
    <td>${esc(pick(a,['Status']))}</td>
  </tr>`).join(''):'<tr><td colspan="6">Nenhum retorno pendente.</td></tr>';
 }
-let PROPS_BODY_BOUND=false;
+function currentPropertyList(){
+ if(PROPERTY_LIST_CACHE)return PROPERTY_LIST_CACHE;
+
+ buildTankConsolidation();
+ let mp=new Map();
+
+ function ensure(m,name,route){
+   m=mat(m);
+   if(!m)return null;
+   if(!mp.has(m))mp.set(m,{m,name:name||'',route:route||'',tanks:new Set()});
+   let p=mp.get(m);
+   if(name&&!p.name)p.name=name;
+   if(route&&!p.route)p.route=route;
+   return p;
+ }
+
+ // Current quality cache: fastest and authoritative source for CBT/CCS/current NC.
+ for(let [m,tanks] of (QUALITY_CACHE?.byMat||new Map()).entries()){
+   let first=tanks[0]||{};
+   let p=ensure(m,first.name||'',first.route||officialRouteFor(m)||'');
+   if(!p)continue;
+   for(let t of tanks)p.tanks.add(t.tankNo||1);
+ }
+
+ // Agenda may contain properties with no current lab/NC.
+ for(let a of state.agenda){
+   let m=visitMatricula(a);
+   let p=ensure(m,pick(a,['Produtor','Nome']),dashboardRouteForVisit(a));
+   if(!p)continue;
+   let raw=pick(a,['Tanque(s)','Tanques','Tanque']);
+   if(raw){
+     String(raw).split(/[,;]+/).forEach(x=>{
+       let n=tankNo(x); if(n)p.tanks.add(n);
+     });
+   }
+ }
+
+ PROPERTY_LIST_CACHE=[...mp.values()].sort((a,b)=>
+   (a.route||'').localeCompare(b.route||'','pt-BR') ||
+   (a.name||'').localeCompare(b.name||'','pt-BR')
+ );
+ return PROPERTY_LIST_CACHE;
+}
+
+function propertyRowQuality(matricula){
+ buildTankConsolidation();
+ let tanks=QUALITY_CACHE?.byMat?.get(mat(matricula))||[];
+ if(!tanks.length)return {cbt:'Sem resultado',ccs:'Sem resultado',nc:'—',ncs:[]};
+
+ let cbtRows=tanks.filter(t=>numMetric(t.cbt)!==null);
+ let ccsRows=tanks.filter(t=>numMetric(t.ccs)!==null);
+ let cbt=cbtRows.length?Math.max(...cbtRows.map(t=>numMetric(t.cbt))):null;
+ let ccs=ccsRows.length?Math.max(...ccsRows.map(t=>numMetric(t.ccs))):null;
+
+ let ncMap=new Map();
+ for(let t of tanks){
+   for(let d of (t.ncDetails||[])){
+     let type=canonicalNCLabel(d.type);
+     ncMap.set(type,(ncMap.get(type)||0)+(Number(d.count)||1));
+   }
+ }
+ let ncs=[...ncMap.entries()].map(([type,count])=>({type,count}));
+ let nc=ncs.length?ncs.map(x=>x.type+(x.count>1?' ×'+x.count:'')).join(', '):'—';
+
+ return {
+   cbt:cbt===null?'Sem resultado':String(cbt),
+   ccs:ccs===null?'Sem resultado':String(ccs),
+   nc,ncs
+ };
+}
+
 function renderProps(){
  let q=norm(document.getElementById('propSearch')?.value||'');
- let items=props();
- if(q)items=items.filter(p=>norm((p.name||'')+' '+p.m).includes(q));
+ let items=currentPropertyList();
+ if(q)items=items.filter(p=>norm((p.name||'')+' '+p.m+' '+(officialRouteFor(p.m)||p.route||'')).includes(q));
 
  let body=document.getElementById('propsBody');if(!body)return;
- let html='';
- let limit=Math.min(items.length,300);
- for(let i=0;i<limit;i++){
-   let p=items[i];
-   let rt=fastOfficialRouteFor(p.m)||p.route||'';
-   let tankStr=p.tankStr||(p.tankStr=[...p.tanks].join(', '));
-   html+=`<tr class="prop-row" data-m="${esc(p.m)}">
-     <td>${esc(p.m)}</td>
-     <td>${esc(p.name||'')}</td>
-     <td>${esc(rt)}</td>
-     <td>${esc(tankStr)}</td>
-     <td><button class="open-prop-table-btn" data-m="${esc(p.m)}">Abrir</button></td>
-   </tr>`;
- }
- body.innerHTML=html;
 
- if(!PROPS_BODY_BOUND){
-   body.addEventListener('click',e=>{
-     let btn=e.target.closest('.open-prop-table-btn');
-     if(btn&&btn.dataset.m){
-       renderPropertyDetail(btn.dataset.m);
-     }
-   });
-   PROPS_BODY_BOUND=true;
+ let frag=[];
+ for(let p of items.slice(0,400)){
+   let rt=officialRouteFor(p.m)||p.route||'';
+   let qual=propertyRowQuality(p.m);
+   frag.push(`<tr class="prop-row" data-m="${esc(p.m)}">
+     <td><b>${esc(p.m)}</b></td>
+     <td>${esc(p.name||'')}<div style="margin-top:5px"><button class="open-prop-table-btn" data-m="${esc(p.m)}">Abrir propriedade</button></div></td>
+     <td>${esc(rt||'SEM ROTA')}</td>
+     <td>${esc([...p.tanks].sort((a,b)=>a-b).join(', ')||'1')}</td>
+     <td>${esc(qual.cbt)}</td>
+     <td>${esc(qual.ccs)}</td>
+     <td>${qual.ncs.length?qual.ncs.map(x=>`<span class="tag warn">${esc(x.type)}${x.count>1?' ×'+x.count:''}</span>`).join(' '):'<span class="tag ok">Sem NC atual</span>'}</td>
+   </tr>`);
  }
+ body.innerHTML=frag.join('');
+
+ body.onclick=(ev)=>{
+   let btn=ev.target.closest?.('.open-prop-table-btn');
+   if(!btn)return;
+   ev.preventDefault();
+   renderPropertyDetail(btn.dataset.m);
+   let detail=document.getElementById('propDetail');
+   if(detail)detail.scrollIntoView({behavior:'smooth',block:'start'});
+ };
 }
 
 
@@ -2953,24 +3025,18 @@ function bindPropertyHistoryActions(){
 
 function renderPropertyDetail(matricula){
  let m=mat(matricula);
- let p=null;
+ let p=currentPropertyList().find(x=>x.m===m);
 
- // Fast property lookup from current data first.
- for(let r of state.nc){
-   if(ncMatricula(r)===m){p={m,name:ncProducerName(r)||'',route:pick(r,['Rota','ROTA'])||''};break}
- }
  if(!p){
-   for(let r of state.lab){
-     let raw=pick(r,['Matrícula','Matricula','Código','Codigo','Tanque']);
-     if(mat(raw)===m){p={m,name:pick(r,['Nome','Produtor','Fornecedor'])||'',route:''};break}
+   // Historical fallback only when a specific producer is explicitly opened/searched.
+   for(let r of (state.ncHistory||[])){
+     if(ncMatricula(r)===m){
+       p={m,name:ncProducerName(r)||'Produtor',route:pick(r,['Rota','ROTA'])||'',tanks:new Set([tankNo(ncRawId(r))||1])};
+       break;
+     }
    }
  }
- if(!p){
-   for(let a of state.agenda){
-     if(visitMatricula(a)===m){p={m,name:pick(a,['Produtor','Nome'])||'',route:pick(a,['Rota','Rota Oficial','Rota Histórica'])||''};break}
-   }
- }
- if(!p){p={m,name:'Produtor',route:''}}
+ if(!p)p={m,name:'Produtor',route:'',tanks:new Set([1])};
 
  let box=document.getElementById('propDetail');if(!box)return;
  box.innerHTML=`<div class="prop-detail">
