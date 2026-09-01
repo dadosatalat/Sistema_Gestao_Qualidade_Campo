@@ -3306,12 +3306,14 @@ function routeDiagnosticRows(route){
 
  let qsum=buildPropertyQualitySummary(), out=[];
  for(let p of pRows){
+   let official=officialRouteFor(p.m)||p.route||'';
    let q=qsum.get(p.m);
    let tanks=(q?.tanks||propertyBundle(p.m)).filter(tankHasProblem);
    for(let t of tanks){
      out.push({
        matricula:p.m,
        produtor:p.name||t.name||'',
+       rota:official,
        tankNo:t.tankNo,
        tankKey:t.tankKey,
        cbt:t.cbt,
@@ -3407,6 +3409,7 @@ function renderRouteDiagnosis(){
    return `<tr>
      <td>${esc(r.matricula)}</td>
      <td>${esc(r.produtor)}</td>
+     <td><b>${esc(r.rota||'SEM ROTA')}</b></td>
      <td>${esc(r.tankNo)}</td>
      <td>${esc(r.cbt||'—')}<br>${cbtTag}</td>
      <td>${esc(r.ccs||'—')}<br>${ccsTag}</td>
@@ -3417,7 +3420,7 @@ function renderRouteDiagnosis(){
  }).join('');
 
  if(!rows.length){
-   document.getElementById('routeProblemsBody').innerHTML='<tr><td colspan="8">Nenhum problema técnico encontrado para o filtro atual.</td></tr>';
+   document.getElementById('routeProblemsBody').innerHTML='<tr><td colspan="9">Nenhum problema técnico encontrado para o filtro atual.</td></tr>';
  }
 }
 
