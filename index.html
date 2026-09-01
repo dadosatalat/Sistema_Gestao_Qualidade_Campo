@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sistema Atalat V37.11.6 — Gestão da Qualidade no Campo</title>
+<title>Sistema Atalat V37.11.7 — Gestão da Qualidade no Campo</title>
 <style>
 :root{--cream:#FDFBF7;--navy:#0F3D5E;--blue:#1B4965;--line:#d9e1e5;--green:#477a55;--warn:#a86b1a;--red:#a13c36;--muted:#6d7b82}
 *{box-sizing:border-box}
@@ -327,7 +327,7 @@ body:not(.tech-mode) .technical-only{display:none!important}
 <header>
  <div class="head">
    <div class="logo"></div>
-   <div><h1>Sistema de Gestão da Qualidade no Campo — Atalat</h1><div class="sub">V37.11.6 • Propriedades e Rota Corrigidas • Supabase Online • Ultra Rápido</div></div>
+   <div><h1>Sistema de Gestão da Qualidade no Campo — Atalat</h1><div class="sub">V37.11.7 • Propriedades Instantâneas • Supabase Online • Ultra Rápido</div></div>
    
     <div class="spacer"></div>
     <div class="mode-buttons">
@@ -744,6 +744,8 @@ let state={agenda:INITIAL_AGENDA,nc:INITIAL_NC,lab:INITIAL_LAB,routeMaster:{},us
  ]};
 let QUALITY_CACHE=null;
 let PROPERTY_LIST_CACHE=null;
+let PROPERTY_MAP_CACHE=null;
+let AGENDA_BY_MAT=null;
 let QUALITY_CACHE_VERSION=0;
 let PRIORITY_CACHE = new Map();
 let ROUTE_CACHE = new Map();
@@ -755,6 +757,8 @@ let PLANNER_INITIALIZED = false;
 function invalidateQualityCache(){
   QUALITY_CACHE = null;
   PROPERTY_LIST_CACHE = null;
+  PROPERTY_MAP_CACHE = null;
+  AGENDA_BY_MAT = null;
   PRIORITY_CACHE.clear();
   ROUTE_CACHE.clear();
   PROPS_CACHE = null;
@@ -1736,7 +1740,7 @@ function propertyNCHistory(matricula){
 }
 
 function monthLabel(ref){
- let m=val(ref).match(/^(d{4})-(d{2})$/);
+ let m=val(ref).match(/^(\d{4})-(\d{2})$/);
  if(!m)return ref||'Sem referência';
  let names=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
  return names[Number(m[2])-1]+' / '+m[1];
@@ -2210,17 +2214,27 @@ function setMode(mode){
 }
 function officialRouteFor(matricula){
  let m=mat(matricula);
- if(state.routeMaster[m])return state.routeMaster[m];
- let candidates=state.nc.filter(r=>ncMatricula(r)===m);
+ if(state.routeMaster && state.routeMaster[m])return state.routeMaster[m];
  let route='';
- for(let r of candidates){let rr=pick(r,['Rota','ROTA']);if(rr)route=val(rr).trim()}
+ for(let r of (state.nc||[])){
+   if(ncMatricula(r)===m){
+     let rr=pick(r,['Rota','ROTA']);
+     if(rr){route=val(rr).trim();break;}
+   }
+ }
+ if(state.routeMaster && route) state.routeMaster[m]=route;
  return route;
+}
+function dashboardRouteForVisit(a){
+ let m=visitMatricula(a);
+ let official=m?officialRouteFor(m):'';
+ return official || val(pick(a,['Rota Oficial','Rota','Rota Histórica'])).trim();
 }
 function rebuildRoutes(){
  let rm={};
- for(let r of state.nc){
+ for(let r of (state.nc||[])){
    let m=ncMatricula(r),route=val(pick(r,['Rota','ROTA'])).trim();
-   if(m&&route)rm[m]=route;
+   if(m&&route&&!rm[m])rm[m]=route;
  }
  state.routeMaster=rm;
 }
@@ -2382,8 +2396,7 @@ function propertyBundle(matricula){
  buildTankConsolidation();
  let rows=(QUALITY_CACHE?.byMat?.get(m)||[]).slice();
  if(rows.length)return rows;
- let p=props().find(x=>x.m===m);
- return p?[{matricula:m,tankKey:m+'-1',tankNo:1,name:p.name,route:p.route,cbt:'',ccs:'',cbtDate:'',ccsDate:'',cbtClass:cbtStatus(''),ccsClass:ccsStatus(''),ncs:[],ncTypes:[]}]:[];
+ return [{matricula:m,tankKey:m+'-1',tankNo:1,name:'Produtor',route:'',cbt:'',ccs:'',cbtDate:'',ccsDate:'',cbtClass:cbtStatus(''),ccsClass:ccsStatus(''),ncs:[],ncTypes:[]}];
 }
 function tankHasProblem(t){
  return t.cbtClass.cls==='crit'||t.cbtClass.cls==='warn'||t.ccsClass.cls==='crit'||t.ccsClass.cls==='warn'||(t.ncTypes||[]).length>0;
@@ -2415,11 +2428,25 @@ function buildPropertyQualitySummary(){
 function propertyPriorityReason(matricula){
  return propertyPriorityExplanation(matricula);
 }
-function fieldGuidanceForProperty(matricula){
- let tanks=propertyProblems(matricula),items=[];
- if(tanks.some(t=>['crit','warn'].includes(t.cbtClass.cls)))items.push('Revisar higiene de ordenha, equipamentos, utensílios, limpeza, refrigeração e fontes de contaminação relacionadas à CBT.');
- if(tanks.some(t=>['crit','warn'].includes(t.ccsClass.cls)))items.push('Avaliar mastite, saúde do úbere, rotina de ordenha, descarte/segregação de leite e fatores de rebanho relacionados à CCS.');
- let ncs=[...new Set(tanks.flatMap(t=>t.ncTypes||[]).map(norm))];
+
+function propertyPriorityExplanationFromTanks(tanks){
+ let hasCBT300=tanks.some(t=>{
+   let n=numMetric(t.cbt);
+   return Number.isFinite(n)&&n>=300;
+ });
+ let hasNC=tanks.some(t=>(t.ncTypes||[]).length>0);
+
+ if(hasCBT300 && hasNC) return 'CBT ≥ 300 + não conformidade';
+ if(hasCBT300 && !hasNC) return 'CBT ≥ 300 sem não conformidade';
+ if(!hasCBT300 && hasNC) return 'Não conformidade isolada';
+ return 'Aproveitamento de rota / acompanhamento';
+}
+
+function fieldGuidanceFromTanks(problems){
+ let items=[];
+ if(problems.some(t=>['crit','warn'].includes(t.cbtClass.cls)))items.push('Revisar higiene de ordenha, equipamentos, utensílios, limpeza, refrigeração e fontes de contaminação relacionadas à CBT.');
+ if(problems.some(t=>['crit','warn'].includes(t.ccsClass.cls)))items.push('Avaliar mastite, saúde do úbere, rotina de ordenha, descarte/segregação de leite e fatores de rebanho relacionados à CCS.');
+ let ncs=[...new Set(problems.flatMap(t=>t.ncTypes||[]).map(norm))];
  if(ncs.some(x=>x.includes('CRIOSCOPIA')))items.push('Verificar congelamento, adição de água, refrigeração e causas relacionadas à crioscopia.');
  if(ncs.some(x=>x.includes('ALIZAROL')))items.push('Verificar estabilidade do leite, acidez, intervalo de coleta e manejo higiênico.');
  if(ncs.some(x=>x.includes('ACIDEZ')))items.push('Revisar tempo/temperatura de armazenamento, higiene e fermentação.');
@@ -2427,6 +2454,10 @@ function fieldGuidanceForProperty(matricula){
  if(ncs.some(x=>x.includes('CLORETO')))items.push('Investigar alterações do leite e condição sanitária do rebanho conforme o contexto da propriedade.');
  if(!items.length)items.push('Realizar avaliação geral da propriedade e confirmar a situação atual dos tanques.');
  return items;
+}
+
+function fieldGuidanceForProperty(matricula){
+ return fieldGuidanceFromTanks(propertyProblems(matricula));
 }
 function tankSummaryHTML(t){
  let det=(t.ncDetails||[]);
@@ -2446,8 +2477,10 @@ function tankSummaryHTML(t){
  </div>`;
 }
 function propertyBriefingHTML(matricula){
- let tanks=propertyBundle(matricula),problems=propertyProblems(matricula),guide=fieldGuidanceForProperty(matricula);
- return `<div class="reason"><b>Motivo técnico consolidado:</b> ${esc(propertyPriorityReason(matricula))}</div>
+ let tanks=propertyBundle(matricula),problems=tanks.filter(tankHasProblem);
+ let guide=fieldGuidanceFromTanks(problems);
+ let reason=propertyPriorityExplanationFromTanks(tanks);
+ return `<div class="reason"><b>Motivo técnico consolidado:</b> ${esc(reason)}</div>
    ${tanks.map(tankSummaryHTML).join('')}
    <div class="briefing"><b>Na fazenda, conferir de forma integrada:</b>
     <ul class="issue-list">${guide.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
@@ -2963,19 +2996,29 @@ function renderProps(){
 }
 
 
-function propertyVisitHistory(matricula){
- let m=mat(matricula),out=[];
- for(let i=0;i<state.agenda.length;i++){
-   let a=state.agenda[i];
-   if(visitMatricula(a)!==m)continue;
-   out.push({a,i});
+function indexAgenda(){
+ AGENDA_BY_MAT = new Map();
+ let agenda = state.agenda || [];
+ for(let i=0; i<agenda.length; i++){
+   let a = agenda[i];
+   let m = visitMatricula(a);
+   if(!m) continue;
+   if(!AGENDA_BY_MAT.has(m)) AGENDA_BY_MAT.set(m, []);
+   AGENDA_BY_MAT.get(m).push({a, i});
  }
- out.sort((x,y)=>{
-   let dx=dateISO(pick(x.a,['Data Real','Data Conclusão','Data Tentativa','Data','Data Agenda','Data Agendada']));
-   let dy=dateISO(pick(y.a,['Data Real','Data Conclusão','Data Tentativa','Data','Data Agenda','Data Agendada']));
-   return dy.localeCompare(dx);
- });
- return out;
+ for(let arr of AGENDA_BY_MAT.values()){
+   arr.sort((x,y)=>{
+     let dx=dateISO(pick(x.a,['Data Real','Data Conclusão','Data Tentativa','Data','Data Agenda','Data Agendada']));
+     let dy=dateISO(pick(y.a,['Data Real','Data Conclusão','Data Tentativa','Data','Data Agenda','Data Agendada']));
+     return dy.localeCompare(dx);
+   });
+ }
+}
+
+function propertyVisitHistory(matricula){
+ let m = mat(matricula);
+ if(!AGENDA_BY_MAT) indexAgenda();
+ return (AGENDA_BY_MAT && AGENDA_BY_MAT.get(m)) || [];
 }
 function visitFlowHTML(matricula){
  let hist=propertyVisitHistory(matricula);
@@ -3025,18 +3068,14 @@ function bindPropertyHistoryActions(){
 
 function renderPropertyDetail(matricula){
  let m=mat(matricula);
- let p=currentPropertyList().find(x=>x.m===m);
-
- if(!p){
-   // Historical fallback only when a specific producer is explicitly opened/searched.
-   for(let r of (state.ncHistory||[])){
-     if(ncMatricula(r)===m){
-       p={m,name:ncProducerName(r)||'Produtor',route:pick(r,['Rota','ROTA'])||'',tanks:new Set([tankNo(ncRawId(r))||1])};
-       break;
-     }
-   }
+ if(!PROPERTY_MAP_CACHE){
+   currentPropertyList();
+   PROPERTY_MAP_CACHE = new Map((PROPERTY_LIST_CACHE||[]).map(p=>[p.m, p]));
  }
- if(!p)p={m,name:'Produtor',route:'',tanks:new Set([1])};
+ let p=PROPERTY_MAP_CACHE.get(m);
+ if(!p){
+   p={m, name:'Produtor', route:officialRouteFor(m)||'', tanks:new Set([1])};
+ }
 
  let box=document.getElementById('propDetail');if(!box)return;
  box.innerHTML=`<div class="prop-detail">
@@ -3658,7 +3697,7 @@ async function importNC(file){
  }
 }
 
-safeLoad();ensureTeam();ensureNCHistory();rebuildRoutes();fillRoutes();
+safeLoad();ensureTeam();ensureNCHistory();rebuildRoutes();fillRoutes();currentPropertyList();indexAgenda();
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>activate(b.dataset.tab)));
 document.getElementById('modeMgmt').addEventListener('click',()=>setMode('GESTAO'));
 document.getElementById('modeTech').addEventListener('click',()=>setMode('TECNICO'));
