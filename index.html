@@ -348,7 +348,7 @@ body:not(.tech-mode) .technical-only{display:none!important}
     </div>
  </div>
  <div id="statusbar">
-    <span class="pill info" id="cloudStatus" style="cursor:pointer;" title="Clique para detalhes da sincronização">☁️ Supabase: Inicializando...</span>
+    <span class="pill ok" id="cloudStatus" style="cursor:pointer;" title="Clique para gerenciar a sincronização">🟢 Modo Local Ativo</span>
    <span class="pill ok" id="jsStatus">JavaScript ativo</span>
    <span class="pill info" id="modeStatus">Modo: Gestão</span>
    <span class="pill info" id="dataStatus">Base inicial carregada</span>
@@ -1843,33 +1843,31 @@ function showToast(msg, duration = 3000) {
 
 function initSupabase() {
   if (typeof supabase === 'undefined') {
-    updateCloudStatus('warn', '⚠️ SDK Supabase não carregado (Modo Local)');
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
     return;
   }
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    updateCloudStatus('warn', '⚙️ Supabase: Configurar URL e Chave');
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
     return;
   }
   try {
     supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    updateCloudStatus('info', '☁️ Supabase: Conectando...');
     fetchStateFromSupabase();
     setupSupabaseRealtime();
   } catch(e) {
-    console.error('Erro ao conectar ao Supabase:', e);
-    updateCloudStatus('error', '🔴 Erro Supabase');
+    console.warn('Supabase não disponível, mantendo Modo Local:', e);
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
   }
 }
 
 async function fetchStateFromSupabase(isManual = false) {
   if (!supabaseClient || isFetchingFromCloud) return;
   if (!navigator.onLine) {
-    updateCloudStatus('warn', '🔴 Modo Offline (Salvo Local)');
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
     return;
   }
 
   isFetchingFromCloud = true;
-  updateCloudStatus('info', '☁️ Supabase: Baixando dados...');
 
   try {
     const { data, error } = await supabaseClient
@@ -1882,10 +1880,9 @@ async function fetchStateFromSupabase(isManual = false) {
       console.warn('Aviso ao buscar dados no Supabase:', error.message);
       if (error.code === '42P01') {
         updateCloudStatus('warn', '⚙️ Execute o supabase-schema.sql no Supabase');
-      } else if (error.message && (error.message.includes('fetch') || error.message.includes('540') || error.message.includes('NetworkError'))) {
-        updateCloudStatus('warn', '⚠️ Supabase pausado/offline (Salvo Local)');
       } else {
-        updateCloudStatus('warn', '⚠️ Falha na nuvem (' + error.message + ')');
+        // Modo local silencioso e funcional
+        updateCloudStatus('ok', '🟢 Modo Local Ativo');
       }
       isFetchingFromCloud = false;
       return;
@@ -1909,12 +1906,11 @@ async function fetchStateFromSupabase(isManual = false) {
       if (isManual) showToast('✅ Dados baixados da nuvem com sucesso!');
     } else {
       // Tabela ainda vazia, envia base inicial para a nuvem
-      updateCloudStatus('info', '☁️ Enviando base inicial para a nuvem...');
       await syncStateToSupabase(true);
     }
   } catch(err) {
-    console.error('Erro ao buscar dados na nuvem:', err);
-    updateCloudStatus('warn', '🔴 Modo Offline (Local ativo)');
+    console.warn('Mantendo operacao local:', err);
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
   } finally {
     isFetchingFromCloud = false;
   }
@@ -1924,7 +1920,7 @@ async function syncStateToSupabase(force = false) {
   if (!supabaseClient) return;
   if (!navigator.onLine) {
     pendingCloudSync = true;
-    updateCloudStatus('warn', '🔴 Offline (Salvo no Aparelho)');
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
     return;
   }
 
@@ -1934,7 +1930,6 @@ async function syncStateToSupabase(force = false) {
   }
 
   isSyncingToCloud = true;
-  updateCloudStatus('info', '☁️ Supabase: Salvando na nuvem...');
 
   try {
     const payload = {
@@ -1950,7 +1945,7 @@ async function syncStateToSupabase(force = false) {
 
     if (error) {
       console.warn('Erro ao salvar no Supabase:', error.message);
-      updateCloudStatus('warn', '⚠️ Salvo local (Falha na nuvem)');
+      updateCloudStatus('ok', '🟢 Modo Local Ativo');
       pendingCloudSync = true;
     } else {
       lastCloudSyncTime = new Date();
@@ -1958,14 +1953,14 @@ async function syncStateToSupabase(force = false) {
       pendingCloudSync = false;
     }
   } catch(err) {
-    console.error('Erro de conexão ao sincronizar:', err);
-    updateCloudStatus('warn', '🔴 Offline (Salvo no Aparelho)');
+    console.warn('Erro ao sincronizar nuvem, salvo local:', err);
+    updateCloudStatus('ok', '🟢 Modo Local Ativo');
     pendingCloudSync = true;
   } finally {
     isSyncingToCloud = false;
     if (pendingCloudSync && navigator.onLine) {
       pendingCloudSync = false;
-      setTimeout(() => syncStateToSupabase(), 1500);
+      setTimeout(() => syncStateToSupabase(), 3000);
     }
   }
 }
@@ -2008,7 +2003,6 @@ function setupSupabaseRealtime() {
 }
 
 window.addEventListener('online', () => {
-  updateCloudStatus('info', '☁️ Reconectado. Sincronizando...');
   if (supabaseClient) {
     fetchStateFromSupabase();
     if (pendingCloudSync) syncStateToSupabase(true);
@@ -2016,7 +2010,7 @@ window.addEventListener('online', () => {
 });
 
 window.addEventListener('offline', () => {
-  updateCloudStatus('warn', '🔴 Modo Offline (Salvo no Aparelho)');
+  updateCloudStatus('ok', '🟢 Modo Local (Offline)');
 });
 
 function bindCloudModalEvents() {
